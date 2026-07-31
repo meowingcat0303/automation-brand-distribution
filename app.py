@@ -1,3 +1,4 @@
+"""
 Brand Distribution Tracker
 Streamlit app untuk tracking kenaikan/penurunan BD per Brand, per Cycle, per Minggu.
 
@@ -465,13 +466,11 @@ with tab2:
 with tab3:
     st.subheader(f"Tren BD per Minggu — {brand_label}")
 
-    # ── FIX UTAMA: cek ada data nyata, bukan sekadar kolom ada ──
     avail_cycles = get_avail_week_cycles(dff)
 
     if not avail_cycles:
         st.info("Belum ada data mingguan untuk filter yang dipilih.")
     else:
-        # Default: 3 cycle TERAKHIR yang BENAR-BENAR punya data
         default_sel = avail_cycles[-min(3, len(avail_cycles)):]
 
         sel_cycles = st.multiselect(
@@ -530,7 +529,6 @@ with tab3:
             fig4.update_yaxes(showgrid=True, gridcolor="#e0e0e0")
             st.plotly_chart(fig4, use_container_width=True)
 
-            # Delta dalam 1 Cycle
             st.markdown("---")
             st.subheader("Perubahan Mingguan dalam 1 Cycle")
             sel_cy_detail = st.selectbox("Pilih Cycle", sel_cycles, key="t3_cy_detail")
@@ -555,7 +553,6 @@ with tab3:
             )
             st.plotly_chart(fig5, use_container_width=True)
 
-            # Heatmap per Rayon
             st.markdown("---")
             st.subheader("Heatmap BD Mingguan per Rayon")
             ht_cy = st.selectbox("Cycle untuk Heatmap", sel_cycles, key="t3_hm")
