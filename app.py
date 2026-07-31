@@ -4,7 +4,7 @@ Streamlit app untuk tracking kenaikan/penurunan BD per Brand, per Cycle, per Min
 
 Cara menjalankan:
   pip install streamlit plotly openpyxl pandas
-  streamlit run brand_distribution_tracker.py
+  streamlit run app.py
 """
 
 import streamlit as st
@@ -79,10 +79,7 @@ def safe_float(row, idx):
 
 
 def parse_sheet(ws) -> pd.DataFrame:
-    """Parse one brand sheet into a flat DataFrame.
-    Each sheet can contain multiple Regional sections;
-    each section starts with a header row (Area | Rayon | ...).
-    """
+    """Parse one brand sheet into a flat DataFrame."""
     rows = list(ws.iter_rows(values_only=True))
     records = []
     in_data = False
@@ -139,7 +136,6 @@ def parse_sheet(ws) -> pd.DataFrame:
         # % BD per cycle
         for lbl, ci in zip(BD_CYCLE_LABELS, PCT_ALL_COLS):
             val = safe_float(row, ci)
-            # Values stored as 0-100 scale in some sheets, auto-detect
             rec[f"PCT_{lbl}"] = val
 
         # Weekly BD
@@ -154,12 +150,8 @@ def parse_sheet(ws) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner="📂 Membaca file Excel…")
-def load_all_brands(file_path_or_bytes):
-    if isinstance(file_path_or_bytes, (str,)):
-        wb = load_workbook(file_path_or_bytes, read_only=True, data_only=True)
-    else:
-        wb = load_workbook(file_path_or_bytes, read_only=True, data_only=True)
-
+def load_all_brands(file_bytes):
+    wb = load_workbook(file_bytes, read_only=True, data_only=True)
     brand_data = {}
     for sheet_name in wb.sheetnames:
         if sheet_name == "BY BRAND":
@@ -186,21 +178,15 @@ def latest_cycle_with_data(df: pd.DataFrame) -> str:
 with st.sidebar:
     st.header("⚙️ Pengaturan")
     uploaded = st.file_uploader("Upload file Excel BD (.xlsx)", type=["xlsx"])
-    use_default = st.checkbox("Gunakan file contoh bawaan",
-                              value=(uploaded is None), key="use_default")
 
-DEFAULT_PATH = "/mnt/user-data/uploads/Area_Bogor_-_Brand_Distribusi_Cy_7_2026.xlsx"
-
+# ─── LOAD DATA ────────────────────────────────────────────────────────────────
 if uploaded:
     raw_bytes = BytesIO(uploaded.read())
     all_data  = load_all_brands(raw_bytes)
     src_label = uploaded.name
-elif use_default:
-    all_data  = load_all_brands(DEFAULT_PATH)
-    src_label = "Area_Bogor_-_Brand_Distribusi_Cy_7_2026.xlsx"
 else:
     st.markdown('<p class="main-header">📊 Brand Distribution Tracker</p>', unsafe_allow_html=True)
-    st.info("Upload file Excel Brand Distribution atau centang 'Gunakan file contoh bawaan' di sidebar.")
+    st.info("⬆️ Silakan **upload file Excel Brand Distribution** melalui sidebar kiri untuk memulai.")
     st.stop()
 
 if not all_data:
@@ -315,7 +301,6 @@ with tab1:
     show_df  = dff[grp_cols + cy_cols].copy()
     show_df.columns = grp_cols + BD_CYCLE_LABELS
 
-    # Color: green if value increased vs prev col, red if decreased
     def color_cycles(row):
         bg = [""] * len(row)
         vals = [row.get(c, np.nan) for c in BD_CYCLE_LABELS]
@@ -337,7 +322,6 @@ with tab1:
     )
     st.dataframe(styled, use_container_width=True, height=500)
 
-    # Delta table
     st.markdown("---")
     st.subheader(f"📊 Naik / Turun per Rayon: **{cy_prev} → {cy_now}**")
 
@@ -413,7 +397,6 @@ with tab2:
     fig.update_yaxes(showgrid=True, gridcolor="#e0e0e0")
     st.plotly_chart(fig, use_container_width=True)
 
-    # Delta bar chart (aggregate)
     st.markdown("---")
     st.subheader("Delta BD Aggregat antar Cycle")
 
@@ -436,7 +419,6 @@ with tab2:
     )
     st.plotly_chart(fig2, use_container_width=True)
 
-    # % BD chart
     st.markdown("---")
     st.subheader("Tren % BD per Cycle")
     pct_agg = dff.groupby(id_col if chart_grp == "Area" else "Rayon")[
@@ -469,7 +451,7 @@ with tab2:
 with tab3:
     st.subheader(f"Tren BD per Minggu — {selected_brand}")
 
-    avail_cycles = [c for c in list(CYCLE_WEEK_COLS.keys())[1:]  # skip Cy13'25
+    avail_cycles = [c for c in list(CYCLE_WEEK_COLS.keys())[1:]
                     if any(f"WK_{c}_Mg{mg}" in dff.columns for mg in range(1, 5))]
 
     sel_cycles = st.multiselect(
@@ -501,7 +483,6 @@ with tab3:
         fig4.update_yaxes(showgrid=True, gridcolor="#e0e0e0")
         st.plotly_chart(fig4, use_container_width=True)
 
-        # Delta within a cycle
         st.markdown("---")
         st.subheader("Perubahan Mingguan dalam 1 Cycle")
         if sel_cycles:
@@ -523,7 +504,6 @@ with tab3:
             )
             st.plotly_chart(fig5, use_container_width=True)
 
-        # Heatmap weeks vs rayon
         st.markdown("---")
         st.subheader("Heatmap BD Mingguan per Rayon")
         if sel_cycles:
@@ -605,7 +585,6 @@ with tab4:
     )
     st.plotly_chart(fig7, use_container_width=True)
 
-    # Biggest movers
     st.markdown("---")
     st.subheader(f"Biggest Mover: {rank_prev} → {rank_base}")
 
@@ -640,7 +619,6 @@ with tab4:
                            xaxis_title="Delta BD", margin=dict(l=180))
         st.plotly_chart(fig9, use_container_width=True)
 
-    # Full ranking table
     st.markdown("---")
     st.subheader("Tabel Lengkap Ranking")
 
