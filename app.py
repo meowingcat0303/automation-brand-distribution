@@ -1,4 +1,3 @@
-"""
 Brand Distribution Tracker
 Streamlit app untuk tracking kenaikan/penurunan BD per Brand, per Cycle, per Minggu.
 
@@ -152,6 +151,23 @@ def latest_cycle_with_data(df: pd.DataFrame) -> str:
         if col in df.columns and df[col].notna().any():
             return lbl
     return BD_CYCLE_LABELS[1]
+
+
+def get_avail_week_cycles(df: pd.DataFrame) -> list:
+    """Kembalikan hanya cycle yang BENAR-BENAR punya data minggu (bukan cuma kolom kosong)."""
+    result = []
+    for cy_lbl, col_list in CYCLE_WEEK_COLS.items():
+        if cy_lbl == "Cy 13'25":
+            col = "WK_Cy13'25"
+            if col in df.columns and df[col].notna().any():
+                result.append(cy_lbl)
+        else:
+            for mg_idx in range(1, len(col_list) + 1):
+                col = f"WK_{cy_lbl}_Mg{mg_idx}"
+                if col in df.columns and df[col].notna().any():
+                    result.append(cy_lbl)
+                    break  # cukup 1 minggu yang ada data
+    return result
 
 
 def hl_delta(val):
@@ -354,7 +370,7 @@ with tab1:
 
     styled_d = (
         delta_df.style
-        .map(hl_delta, subset=["Delta"])          # ← .map() bukan .applymap()
+        .map(hl_delta, subset=["Delta"])
         .format({cy_prev: "{:,.0f}", cy_now: "{:,.0f}", "Delta": "{:+,.0f}"}, na_rep="—")
     )
     st.dataframe(styled_d, use_container_width=True, height=400)
@@ -366,7 +382,6 @@ with tab1:
 with tab2:
     st.subheader(f"Tren Absolute BD per Cycle — {brand_label}")
 
-    # Kalau multi-brand, default group by Brand; kalau single brand group by Rayon/Area
     if multi_brand:
         chart_grp_opts = ["Brand", "Rayon", "Area"]
     else:
@@ -450,70 +465,75 @@ with tab2:
 with tab3:
     st.subheader(f"Tren BD per Minggu — {brand_label}")
 
-    avail_cycles = [c for c in list(CYCLE_WEEK_COLS.keys())[1:]
-                    if any(f"WK_{c}_Mg{mg}" in dff.columns for mg in range(1, 5))]
+    # ── FIX UTAMA: cek ada data nyata, bukan sekadar kolom ada ──
+    avail_cycles = get_avail_week_cycles(dff)
 
-    sel_cycles = st.multiselect(
-        "Pilih Cycle yang ditampilkan",
-        options=avail_cycles,
-        default=avail_cycles[-min(3, len(avail_cycles)):],
-        key="t3_cycles"
-    )
+    if not avail_cycles:
+        st.info("Belum ada data mingguan untuk filter yang dipilih.")
+    else:
+        # Default: 3 cycle TERAKHIR yang BENAR-BENAR punya data
+        default_sel = avail_cycles[-min(3, len(avail_cycles)):]
 
-    # Kalau multi-brand, group per Brand; kalau single, aggregate semua
-    grp_wk = "Brand" if multi_brand else None
+        sel_cycles = st.multiselect(
+            "Pilih Cycle yang ditampilkan",
+            options=avail_cycles,
+            default=default_sel,
+            key="t3_cycles"
+        )
 
-    week_records = []
-    if grp_wk:
-        for brand_name in selected_brands:
-            brand_dff = dff[dff["Brand"] == brand_name]
+        week_records = []
+
+        if multi_brand:
+            for brand_name in selected_brands:
+                brand_dff = dff[dff["Brand"] == brand_name]
+                for cy in sel_cycles:
+                    col_list = CYCLE_WEEK_COLS.get(cy, [])
+                    for mg_idx, _ in enumerate(col_list, start=1):
+                        col = f"WK_{cy}_Mg{mg_idx}" if cy != "Cy 13'25" else "WK_Cy13'25"
+                        if col in brand_dff.columns:
+                            val = brand_dff[col].sum(min_count=1)
+                            if not pd.isna(val):
+                                week_records.append({
+                                    "Brand":  brand_name,
+                                    "Cycle":  cy,
+                                    "Minggu": f"Mg {mg_idx}",
+                                    "label":  f"{cy} Mg{mg_idx}",
+                                    "BD":     val,
+                                })
+        else:
             for cy in sel_cycles:
-                for mg in range(1, 5):
-                    col = f"WK_{cy}_Mg{mg}"
-                    if col in brand_dff.columns:
-                        val = brand_dff[col].sum(min_count=1)
+                col_list = CYCLE_WEEK_COLS.get(cy, [])
+                for mg_idx, _ in enumerate(col_list, start=1):
+                    col = f"WK_{cy}_Mg{mg_idx}" if cy != "Cy 13'25" else "WK_Cy13'25"
+                    if col in dff.columns:
+                        val = dff[col].sum(min_count=1)
                         if not pd.isna(val):
                             week_records.append({
-                                "Brand": brand_name,
-                                "Cycle": cy,
-                                "Minggu": f"Mg {mg}",
-                                "label": f"{cy} Mg{mg}",
-                                "BD": val
+                                "Cycle":  cy,
+                                "Minggu": f"Mg {mg_idx}",
+                                "label":  f"{cy} Mg{mg_idx}",
+                                "BD":     val,
                             })
-    else:
-        for cy in sel_cycles:
-            for mg in range(1, 5):
-                col = f"WK_{cy}_Mg{mg}"
-                if col in dff.columns:
-                    val = dff[col].sum(min_count=1)
-                    if not pd.isna(val):
-                        week_records.append({
-                            "Cycle": cy,
-                            "Minggu": f"Mg {mg}",
-                            "label": f"{cy} Mg{mg}",
-                            "BD": val
-                        })
 
-    if week_records:
-        wdf = pd.DataFrame(week_records)
-        color_col = "Brand" if multi_brand else "Cycle"
-        fig4 = px.line(
-            wdf, x="label", y="BD", color=color_col, markers=True,
-            labels={"BD": "Jumlah Outlet (BD)", "label": "Minggu"},
-            title="Tren BD per Minggu",
-            color_discrete_sequence=px.colors.qualitative.Set1,
-        )
-        fig4.update_layout(height=430, plot_bgcolor="#fafafa", hovermode="x unified")
-        fig4.update_xaxes(tickangle=45, showgrid=True, gridcolor="#e0e0e0")
-        fig4.update_yaxes(showgrid=True, gridcolor="#e0e0e0")
-        st.plotly_chart(fig4, use_container_width=True)
+        if week_records:
+            wdf = pd.DataFrame(week_records)
+            color_col = "Brand" if multi_brand else "Cycle"
 
-        # Delta dalam 1 Cycle (aggregate semua brand)
-        st.markdown("---")
-        st.subheader("Perubahan Mingguan dalam 1 Cycle")
-        if sel_cycles:
+            fig4 = px.line(
+                wdf, x="label", y="BD", color=color_col, markers=True,
+                labels={"BD": "Jumlah Outlet (BD)", "label": "Minggu"},
+                title="Tren BD per Minggu",
+                color_discrete_sequence=px.colors.qualitative.Set1,
+            )
+            fig4.update_layout(height=430, plot_bgcolor="#fafafa", hovermode="x unified")
+            fig4.update_xaxes(tickangle=45, showgrid=True, gridcolor="#e0e0e0")
+            fig4.update_yaxes(showgrid=True, gridcolor="#e0e0e0")
+            st.plotly_chart(fig4, use_container_width=True)
+
+            # Delta dalam 1 Cycle
+            st.markdown("---")
+            st.subheader("Perubahan Mingguan dalam 1 Cycle")
             sel_cy_detail = st.selectbox("Pilih Cycle", sel_cycles, key="t3_cy_detail")
-            # Aggregate per label (gabungkan semua brand)
             cy_wdf = (
                 wdf[wdf["Cycle"] == sel_cy_detail]
                 .groupby("label", sort=False)["BD"].sum()
@@ -535,19 +555,25 @@ with tab3:
             )
             st.plotly_chart(fig5, use_container_width=True)
 
-        # Heatmap per Rayon
-        st.markdown("---")
-        st.subheader("Heatmap BD Mingguan per Rayon")
-        if sel_cycles:
+            # Heatmap per Rayon
+            st.markdown("---")
+            st.subheader("Heatmap BD Mingguan per Rayon")
             ht_cy = st.selectbox("Cycle untuk Heatmap", sel_cycles, key="t3_hm")
-            hm_cols = [f"WK_{ht_cy}_Mg{mg}" for mg in range(1, 5) if f"WK_{ht_cy}_Mg{mg}" in dff.columns]
+            col_list = CYCLE_WEEK_COLS.get(ht_cy, [])
+            hm_cols = [
+                f"WK_{ht_cy}_Mg{mg}" if ht_cy != "Cy 13'25" else "WK_Cy13'25"
+                for mg in range(1, len(col_list) + 1)
+                if (f"WK_{ht_cy}_Mg{mg}" if ht_cy != "Cy 13'25" else "WK_Cy13'25") in dff.columns
+                   and dff[f"WK_{ht_cy}_Mg{mg}" if ht_cy != "Cy 13'25" else "WK_Cy13'25"].notna().any()
+            ]
             if hm_cols:
                 hm_df = dff[["Rayon"] + hm_cols].groupby("Rayon").sum(min_count=1).reset_index()
-                hm_df.columns = ["Rayon"] + [f"Mg {i+1}" for i in range(len(hm_cols))]
-                z_vals = hm_df[[c for c in hm_df.columns if c != "Rayon"]].values
+                mg_labels = [f"Mg {i+1}" for i in range(len(hm_cols))]
+                hm_df.columns = ["Rayon"] + mg_labels
+                z_vals = hm_df[mg_labels].values
                 fig6 = go.Figure(go.Heatmap(
                     z=z_vals,
-                    x=[c for c in hm_df.columns if c != "Rayon"],
+                    x=mg_labels,
                     y=hm_df["Rayon"].tolist(),
                     colorscale="Blues",
                     hoverongaps=False,
@@ -560,8 +586,8 @@ with tab3:
                     margin=dict(l=150),
                 )
                 st.plotly_chart(fig6, use_container_width=True)
-    else:
-        st.info("Belum ada data mingguan untuk filter yang dipilih.")
+        else:
+            st.info("Belum ada data mingguan untuk cycle yang dipilih.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -665,7 +691,7 @@ with tab4:
 
     styled_r = (
         rdf.style
-        .map(hl_delta, subset=["Delta"])          # ← .map() bukan .applymap()
+        .map(hl_delta, subset=["Delta"])
         .format({rank_base: "{:,.0f}", rank_prev: "{:,.0f}", "Delta": "{:+,.0f}"}, na_rep="—")
     )
     st.dataframe(styled_r, use_container_width=True, height=500)
