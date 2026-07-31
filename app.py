@@ -35,10 +35,9 @@ div[data-testid="metric-container"] {
 
 # ─── CONSTANTS ────────────────────────────────────────────────────────────────
 BD_CYCLE_LABELS = ["Cy 13'25"] + [f"Cy {i}" for i in range(1, 14)]
-BD_ALL_COLS     = [85] + list(range(86, 99))   # Absolute BD per cycle
-PCT_ALL_COLS    = [100] + list(range(101, 114)) # % BD per cycle
+BD_ALL_COLS     = [85] + list(range(86, 99))
+PCT_ALL_COLS    = [100] + list(range(101, 114))
 
-# Week columns: cycle label → list of column indices (0-based)
 CYCLE_WEEK_COLS = {
     "Cy 13'25": [28],
     "Cy 1":  [29, 30, 31, 32],
@@ -64,7 +63,6 @@ SKIP_AREAS = {
 
 # ─── DATA LOADER ──────────────────────────────────────────────────────────────
 def safe_float(row, idx):
-    """Safely extract float from row at index idx."""
     try:
         if idx >= len(row):
             return np.nan
@@ -79,7 +77,6 @@ def safe_float(row, idx):
 
 
 def parse_sheet(ws) -> pd.DataFrame:
-    """Parse one brand sheet into a flat DataFrame."""
     rows = list(ws.iter_rows(values_only=True))
     records = []
     in_data = False
@@ -88,38 +85,29 @@ def parse_sheet(ws) -> pd.DataFrame:
     for row in rows:
         if row is None or len(row) < 3:
             continue
-
-        # Detect section header
         if row[1] == "Area" and row[2] == "Rayon":
             in_data = True
             current_area = None
             continue
-
         if not in_data:
             continue
 
         area_raw  = row[1]
         rayon_raw = row[2]
 
-        # Skip empty rayon
         if rayon_raw is None:
             continue
         rayon_str = str(rayon_raw).strip()
         if not rayon_str or rayon_str.startswith("=") or rayon_str == "0":
             continue
-
-        # Skip aggregate/total rows
         if isinstance(area_raw, str) and area_raw.strip().upper() in SKIP_AREAS:
             continue
         if rayon_str.upper() in ("TOTAL AREA",):
             continue
-
-        # Update area tracker
         if area_raw is not None:
             area_str = str(area_raw).strip()
             if area_str and not area_str.startswith("=") and area_str.upper() not in SKIP_AREAS:
                 current_area = area_str
-
         if current_area is None:
             continue
 
@@ -128,17 +116,10 @@ def parse_sheet(ws) -> pd.DataFrame:
             "Rayon": rayon_str,
             "OU":    safe_float(row, 5),
         }
-
-        # Absolute BD per cycle
         for lbl, ci in zip(BD_CYCLE_LABELS, BD_ALL_COLS):
             rec[f"BD_{lbl}"] = safe_float(row, ci)
-
-        # % BD per cycle
         for lbl, ci in zip(BD_CYCLE_LABELS, PCT_ALL_COLS):
-            val = safe_float(row, ci)
-            rec[f"PCT_{lbl}"] = val
-
-        # Weekly BD
+            rec[f"PCT_{lbl}"] = safe_float(row, ci)
         for cy_lbl, col_list in CYCLE_WEEK_COLS.items():
             for mg_idx, ci in enumerate(col_list, start=1):
                 key = f"WK_{cy_lbl}_Mg{mg_idx}" if cy_lbl != "Cy 13'25" else "WK_Cy13'25"
@@ -166,12 +147,21 @@ def load_all_brands(file_bytes):
 
 
 def latest_cycle_with_data(df: pd.DataFrame) -> str:
-    """Return the last cycle label that has at least one non-NaN BD value."""
     for lbl in reversed(BD_CYCLE_LABELS[1:]):
         col = f"BD_{lbl}"
         if col in df.columns and df[col].notna().any():
             return lbl
     return BD_CYCLE_LABELS[1]
+
+
+def hl_delta(val):
+    """Style function untuk kolom Delta — kompatibel pandas baru & lama."""
+    if isinstance(val, (int, float)) and not pd.isna(val):
+        if val > 0:
+            return "color:#2e7d32;font-weight:bold"
+        if val < 0:
+            return "color:#c62828;font-weight:bold"
+    return ""
 
 
 # ─── SIDEBAR ──────────────────────────────────────────────────────────────────
@@ -197,26 +187,45 @@ if not all_data:
 with st.sidebar:
     st.markdown("---")
     st.subheader("🔍 Filter")
-    brand_list     = sorted(all_data.keys())
-    selected_brand = st.selectbox("Brand", brand_list)
+    brand_list = sorted(all_data.keys())
 
-    df_brand = all_data[selected_brand].copy()
-    area_opts = ["Semua Area"] + sorted(df_brand["Area"].dropna().unique().tolist())
+    # ── MULTI-SELECT BRAND ──
+    selected_brands = st.multiselect(
+        "Brand (pilih satu atau lebih)",
+        options=brand_list,
+        default=[brand_list[0]],
+        key="sel_brands"
+    )
+    if not selected_brands:
+        st.warning("Pilih minimal 1 brand.")
+        st.stop()
+
+    # Gabungkan semua brand yang dipilih
+    frames = []
+    for b in selected_brands:
+        tmp = all_data[b].copy()
+        tmp["Brand"] = b
+        frames.append(tmp)
+    df_combined = pd.concat(frames, ignore_index=True)
+
+    # Filter Area
+    area_opts = ["Semua Area"] + sorted(df_combined["Area"].dropna().unique().tolist())
     sel_area  = st.selectbox("Area", area_opts)
 
     if sel_area != "Semua Area":
-        rayon_pool = sorted(df_brand[df_brand["Area"] == sel_area]["Rayon"].dropna().unique().tolist())
+        rayon_pool = sorted(df_combined[df_combined["Area"] == sel_area]["Rayon"].dropna().unique().tolist())
     else:
-        rayon_pool = sorted(df_brand["Rayon"].dropna().unique().tolist())
+        rayon_pool = sorted(df_combined["Rayon"].dropna().unique().tolist())
+
     rayon_opts = ["Semua Rayon"] + rayon_pool
     sel_rayon  = st.selectbox("Rayon", rayon_opts)
 
     st.markdown("---")
-    st.caption(f"📄 Sumber: `{src_label}`\n\n"
-               f"🏷️ Brand tersedia: **{len(all_data)}**")
+    brand_label = ", ".join(selected_brands) if len(selected_brands) <= 3 else f"{len(selected_brands)} brand dipilih"
+    st.caption(f"📄 Sumber: `{src_label}`\n\n🏷️ Brand tersedia: **{len(all_data)}**")
 
-# Apply filter
-dff = df_brand.copy()
+# ── Apply filter ──
+dff = df_combined.copy()
 if sel_area  != "Semua Area":
     dff = dff[dff["Area"]  == sel_area]
 if sel_rayon != "Semua Rayon":
@@ -226,10 +235,12 @@ if dff.empty:
     st.warning("⚠️ Tidak ada data untuk filter yang dipilih.")
     st.stop()
 
+multi_brand = len(selected_brands) > 1
+
 # ─── HEADER ───────────────────────────────────────────────────────────────────
-st.markdown(f'<p class="main-header">📊 Brand Distribution Tracker</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-header">📊 Brand Distribution Tracker</p>', unsafe_allow_html=True)
 st.markdown(
-    f'<p class="sub-header">Brand: <b>{selected_brand}</b> | '
+    f'<p class="sub-header">Brand: <b>{brand_label}</b> | '
     f'Area: <b>{sel_area}</b> | Rayon: <b>{sel_rayon}</b></p>',
     unsafe_allow_html=True
 )
@@ -289,14 +300,13 @@ with tab1:
         horizontal=True, key="t1_view"
     )
 
-    if view == "Absolut (Jumlah Outlet)":
-        prefix = "BD_"
-        fmt    = "{:,.0f}"
-    else:
-        prefix = "PCT_"
-        fmt    = "{:.2f}%"
+    prefix = "BD_" if view == "Absolut (Jumlah Outlet)" else "PCT_"
+    fmt    = "{:,.0f}" if view == "Absolut (Jumlah Outlet)" else "{:.2f}%"
 
-    grp_cols = ["Area", "Rayon"] if sel_rayon == "Semua Rayon" else ["Rayon"]
+    grp_cols = (["Brand", "Area", "Rayon"] if multi_brand else ["Area", "Rayon"]) \
+               if sel_rayon == "Semua Rayon" else \
+               (["Brand", "Rayon"] if multi_brand else ["Rayon"])
+
     cy_cols  = [f"{prefix}{lbl}" for lbl in BD_CYCLE_LABELS]
     show_df  = dff[grp_cols + cy_cols].copy()
     show_df.columns = grp_cols + BD_CYCLE_LABELS
@@ -305,13 +315,13 @@ with tab1:
         bg = [""] * len(row)
         vals = [row.get(c, np.nan) for c in BD_CYCLE_LABELS]
         for i in range(1, len(BD_CYCLE_LABELS)):
-            curr = vals[i]; prev = vals[i-1]
+            curr = vals[i]; prev_v = vals[i-1]
             col_pos = len(grp_cols) + i
-            if pd.isna(curr) or pd.isna(prev) or prev == 0:
+            if pd.isna(curr) or pd.isna(prev_v) or prev_v == 0:
                 bg[col_pos] = ""
-            elif curr > prev:
+            elif curr > prev_v:
                 bg[col_pos] = "background-color:#c8e6c9"
-            elif curr < prev:
+            elif curr < prev_v:
                 bg[col_pos] = "background-color:#ffcdd2"
         return bg
 
@@ -342,15 +352,9 @@ with tab1:
     cb.metric("⬇️ Turun", n_turun)
     cc.metric("➡️ Sama",  n_sama)
 
-    def hl_delta(val):
-        if isinstance(val, (int, float)) and not pd.isna(val):
-            if val > 0: return "color:#2e7d32;font-weight:bold"
-            if val < 0: return "color:#c62828;font-weight:bold"
-        return ""
-
     styled_d = (
         delta_df.style
-        .applymap(hl_delta, subset=["Delta"])
+        .map(hl_delta, subset=["Delta"])          # ← .map() bukan .applymap()
         .format({cy_prev: "{:,.0f}", cy_now: "{:,.0f}", "Delta": "{:+,.0f}"}, na_rep="—")
     )
     st.dataframe(styled_d, use_container_width=True, height=400)
@@ -360,20 +364,18 @@ with tab1:
 # TAB 2 — CHART TREN PER CYCLE
 # ══════════════════════════════════════════════════════════════════════════════
 with tab2:
-    st.subheader(f"Tren Absolute BD per Cycle — {selected_brand}")
+    st.subheader(f"Tren Absolute BD per Cycle — {brand_label}")
 
-    chart_grp = st.radio("Kelompokkan berdasarkan", ["Rayon", "Area"], horizontal=True, key="t2_grp")
-
-    if chart_grp == "Area":
-        agg = dff.groupby("Area")[[f"BD_{c}" for c in BD_CYCLE_LABELS]].sum(min_count=1).reset_index()
-        id_col = "Area"
+    # Kalau multi-brand, default group by Brand; kalau single brand group by Rayon/Area
+    if multi_brand:
+        chart_grp_opts = ["Brand", "Rayon", "Area"]
     else:
-        agg = dff.copy()
-        agg = agg[["Rayon"] + [f"BD_{c}" for c in BD_CYCLE_LABELS]]
-        agg = agg.groupby("Rayon")[[f"BD_{c}" for c in BD_CYCLE_LABELS]].sum(min_count=1).reset_index()
-        id_col = "Rayon"
+        chart_grp_opts = ["Rayon", "Area"]
 
-    agg.columns = [id_col] + BD_CYCLE_LABELS
+    chart_grp = st.radio("Kelompokkan berdasarkan", chart_grp_opts, horizontal=True, key="t2_grp")
+
+    agg = dff.groupby(chart_grp)[[f"BD_{c}" for c in BD_CYCLE_LABELS]].sum(min_count=1).reset_index()
+    agg.columns = [chart_grp] + BD_CYCLE_LABELS
     colors = px.colors.qualitative.Plotly
 
     fig = go.Figure()
@@ -381,17 +383,16 @@ with tab2:
         y = [row.get(c) for c in BD_CYCLE_LABELS]
         fig.add_trace(go.Scatter(
             x=BD_CYCLE_LABELS, y=y, mode="lines+markers",
-            name=str(row[id_col]),
+            name=str(row[chart_grp]),
             line=dict(width=2.5, color=colors[i % len(colors)]),
             marker=dict(size=8),
-            hovertemplate=f"<b>{row[id_col]}</b><br>%{{x}}: %{{y:,.0f}} outlet<extra></extra>",
+            hovertemplate=f"<b>{row[chart_grp]}</b><br>%{{x}}: %{{y:,.0f}} outlet<extra></extra>",
         ))
-
     fig.update_layout(
-        title=f"Tren BD per Cycle — {selected_brand}",
+        title=f"Tren BD per Cycle — {brand_label}",
         xaxis_title="Cycle", yaxis_title="Jumlah Outlet (BD)",
         hovermode="x unified", height=460,
-        plot_bgcolor="#fafafa", legend_title=id_col,
+        plot_bgcolor="#fafafa", legend_title=chart_grp,
     )
     fig.update_xaxes(showgrid=True, gridcolor="#e0e0e0")
     fig.update_yaxes(showgrid=True, gridcolor="#e0e0e0")
@@ -413,7 +414,7 @@ with tab2:
     ))
     fig2.add_hline(y=0, line_color="gray", line_dash="dot")
     fig2.update_layout(
-        title="Delta BD vs Cycle Sebelumnya (total semua rayon/area terpilih)",
+        title="Delta BD vs Cycle Sebelumnya (total terpilih)",
         xaxis_title="Cycle", yaxis_title="Delta Outlet",
         height=370, plot_bgcolor="#fafafa", showlegend=False,
     )
@@ -421,26 +422,24 @@ with tab2:
 
     st.markdown("---")
     st.subheader("Tren % BD per Cycle")
-    pct_agg = dff.groupby(id_col if chart_grp == "Area" else "Rayon")[
-        [f"PCT_{c}" for c in BD_CYCLE_LABELS]
-    ].mean(numeric_only=True).reset_index()
-    pct_agg.columns = [id_col] + BD_CYCLE_LABELS
+    pct_agg = dff.groupby(chart_grp)[[f"PCT_{c}" for c in BD_CYCLE_LABELS]].mean(numeric_only=True).reset_index()
+    pct_agg.columns = [chart_grp] + BD_CYCLE_LABELS
 
     fig3 = go.Figure()
     for i, (_, row) in enumerate(pct_agg.iterrows()):
         y = [row.get(c) for c in BD_CYCLE_LABELS]
         fig3.add_trace(go.Scatter(
             x=BD_CYCLE_LABELS, y=y, mode="lines+markers",
-            name=str(row[id_col]),
+            name=str(row[chart_grp]),
             line=dict(width=2, dash="dot", color=colors[i % len(colors)]),
             marker=dict(size=7),
-            hovertemplate=f"<b>{row[id_col]}</b><br>%{{x}}: %{{y:.2f}}%<extra></extra>",
+            hovertemplate=f"<b>{row[chart_grp]}</b><br>%{{x}}: %{{y:.2f}}%<extra></extra>",
         ))
     fig3.update_layout(
-        title="% BD per Cycle (rata-rata per Rayon/Area)",
+        title="% BD per Cycle (rata-rata)",
         xaxis_title="Cycle", yaxis_title="% BD",
         hovermode="x unified", height=400,
-        plot_bgcolor="#fafafa", legend_title=id_col,
+        plot_bgcolor="#fafafa", legend_title=chart_grp,
     )
     st.plotly_chart(fig3, use_container_width=True)
 
@@ -449,7 +448,7 @@ with tab2:
 # TAB 3 — TREN MINGGUAN
 # ══════════════════════════════════════════════════════════════════════════════
 with tab3:
-    st.subheader(f"Tren BD per Minggu — {selected_brand}")
+    st.subheader(f"Tren BD per Minggu — {brand_label}")
 
     avail_cycles = [c for c in list(CYCLE_WEEK_COLS.keys())[1:]
                     if any(f"WK_{c}_Mg{mg}" in dff.columns for mg in range(1, 5))]
@@ -461,19 +460,45 @@ with tab3:
         key="t3_cycles"
     )
 
+    # Kalau multi-brand, group per Brand; kalau single, aggregate semua
+    grp_wk = "Brand" if multi_brand else None
+
     week_records = []
-    for cy in sel_cycles:
-        for mg in range(1, 5):
-            col = f"WK_{cy}_Mg{mg}"
-            if col in dff.columns:
-                val = dff[col].sum(min_count=1)
-                if not pd.isna(val):
-                    week_records.append({"Cycle": cy, "Minggu": f"Mg {mg}", "label": f"{cy} Mg{mg}", "BD": val})
+    if grp_wk:
+        for brand_name in selected_brands:
+            brand_dff = dff[dff["Brand"] == brand_name]
+            for cy in sel_cycles:
+                for mg in range(1, 5):
+                    col = f"WK_{cy}_Mg{mg}"
+                    if col in brand_dff.columns:
+                        val = brand_dff[col].sum(min_count=1)
+                        if not pd.isna(val):
+                            week_records.append({
+                                "Brand": brand_name,
+                                "Cycle": cy,
+                                "Minggu": f"Mg {mg}",
+                                "label": f"{cy} Mg{mg}",
+                                "BD": val
+                            })
+    else:
+        for cy in sel_cycles:
+            for mg in range(1, 5):
+                col = f"WK_{cy}_Mg{mg}"
+                if col in dff.columns:
+                    val = dff[col].sum(min_count=1)
+                    if not pd.isna(val):
+                        week_records.append({
+                            "Cycle": cy,
+                            "Minggu": f"Mg {mg}",
+                            "label": f"{cy} Mg{mg}",
+                            "BD": val
+                        })
 
     if week_records:
         wdf = pd.DataFrame(week_records)
+        color_col = "Brand" if multi_brand else "Cycle"
         fig4 = px.line(
-            wdf, x="label", y="BD", color="Cycle", markers=True,
+            wdf, x="label", y="BD", color=color_col, markers=True,
             labels={"BD": "Jumlah Outlet (BD)", "label": "Minggu"},
             title="Tren BD per Minggu",
             color_discrete_sequence=px.colors.qualitative.Set1,
@@ -483,11 +508,17 @@ with tab3:
         fig4.update_yaxes(showgrid=True, gridcolor="#e0e0e0")
         st.plotly_chart(fig4, use_container_width=True)
 
+        # Delta dalam 1 Cycle (aggregate semua brand)
         st.markdown("---")
         st.subheader("Perubahan Mingguan dalam 1 Cycle")
         if sel_cycles:
             sel_cy_detail = st.selectbox("Pilih Cycle", sel_cycles, key="t3_cy_detail")
-            cy_wdf = wdf[wdf["Cycle"] == sel_cy_detail].reset_index(drop=True)
+            # Aggregate per label (gabungkan semua brand)
+            cy_wdf = (
+                wdf[wdf["Cycle"] == sel_cy_detail]
+                .groupby("label", sort=False)["BD"].sum()
+                .reset_index()
+            )
             cy_wdf["Delta"] = cy_wdf["BD"].diff()
 
             bar_cl = ["#2e7d32" if (pd.isna(v) or v >= 0) else "#c62828" for v in cy_wdf["Delta"]]
@@ -504,6 +535,7 @@ with tab3:
             )
             st.plotly_chart(fig5, use_container_width=True)
 
+        # Heatmap per Rayon
         st.markdown("---")
         st.subheader("Heatmap BD Mingguan per Rayon")
         if sel_cycles:
@@ -536,7 +568,7 @@ with tab3:
 # TAB 4 — RANKING & BIGGEST MOVER
 # ══════════════════════════════════════════════════════════════════════════════
 with tab4:
-    st.subheader(f"🏆 Ranking & Biggest Mover — {selected_brand}")
+    st.subheader(f"🏆 Ranking & Biggest Mover — {brand_label}")
 
     rank_base = st.selectbox(
         "Ranking berdasarkan Cycle",
@@ -545,13 +577,22 @@ with tab4:
         key="t4_cy"
     )
     rank_prev = BD_CYCLE_LABELS[max(0, BD_CYCLE_LABELS.index(rank_base) - 1)]
-    rank_grp  = st.radio("Kelompokkan", ["Rayon", "Area"], horizontal=True, key="t4_grp")
 
-    if rank_grp == "Area":
-        rdf = df_brand.groupby("Area")[[f"BD_{rank_base}", f"BD_{rank_prev}"]].sum(min_count=1).reset_index()
+    if multi_brand:
+        rank_grp_opts = ["Brand", "Rayon", "Area"]
+    else:
+        rank_grp_opts = ["Rayon", "Area"]
+
+    rank_grp = st.radio("Kelompokkan", rank_grp_opts, horizontal=True, key="t4_grp")
+
+    if rank_grp == "Brand":
+        rdf = df_combined.groupby("Brand")[[f"BD_{rank_base}", f"BD_{rank_prev}"]].sum(min_count=1).reset_index()
+        name_col = "Brand"
+    elif rank_grp == "Area":
+        rdf = df_combined.groupby("Area")[[f"BD_{rank_base}", f"BD_{rank_prev}"]].sum(min_count=1).reset_index()
         name_col = "Area"
     else:
-        rdf = df_brand.groupby(["Area","Rayon"])[[f"BD_{rank_base}", f"BD_{rank_prev}"]].sum(min_count=1).reset_index()
+        rdf = df_combined.groupby(["Area", "Rayon"])[[f"BD_{rank_base}", f"BD_{rank_prev}"]].sum(min_count=1).reset_index()
         name_col = "Rayon"
 
     rdf.columns = [c if c not in (f"BD_{rank_base}", f"BD_{rank_prev}") else
@@ -622,16 +663,9 @@ with tab4:
     st.markdown("---")
     st.subheader("Tabel Lengkap Ranking")
 
-    def hl_d(val):
-        if isinstance(val, (int, float)) and not pd.isna(val):
-            if val > 0: return "color:#2e7d32;font-weight:bold"
-            if val < 0: return "color:#c62828;font-weight:bold"
-        return ""
-
-    rdf_show = rdf.copy()
     styled_r = (
-        rdf_show.style
-        .applymap(hl_d, subset=["Delta"])
+        rdf.style
+        .map(hl_delta, subset=["Delta"])          # ← .map() bukan .applymap()
         .format({rank_base: "{:,.0f}", rank_prev: "{:,.0f}", "Delta": "{:+,.0f}"}, na_rep="—")
     )
     st.dataframe(styled_r, use_container_width=True, height=500)
